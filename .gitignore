@@ -20,6 +20,9 @@ __pycache__/
 .vscode/
 .idea/
 
+# Documentos de referencia que no son parte del código
+EQUIPO3.pdf
+
 # Archivos temporales y del sistema
 .DS_Store
 Thumbs.db
