@@ -1,0 +1,86 @@
+Prueba de integración SENTIR - 2026-11-25T17:24:47Z
+Identidad:  https://sentirbk.vercel.app
+Asistencia: https://sentirbk-y7ar.vercel.app
+Ejecución:  8b90971a
+
+1. Los servicios responden
+  [OK]    Identidad responde
+  [OK]    Asistencia responde
+
+2. Administrador y operadores
+  [OK]    El administrador inicia sesión
+  [OK]    Se registra al operador Diego Pacheco
+  [OK]    Diego Pacheco inicia sesión (el correo no distingue mayúsculas)
+  [OK]    Se registra al operador Laura Sanjuán
+  [OK]    Laura Sanjuán inicia sesión (el correo no distingue mayúsculas)
+  [OK]    Un correo repetido da 409 CORREO_YA_REGISTRADO
+  [OK]    Un operador no puede crear operadores (403)
+  [OK]    El administrador lista operadores
+
+3. Ciudadanos (lo que hará el simulador)
+  [OK]    Se registra Yeimy Carrascal y recibe token
+  [OK]    Se registra Andrés Ropero y recibe token
+  [OK]    Se registra Natalia Ascanio y recibe token
+  [OK]    Se registra Camilo Quintero y recibe token
+  [OK]    Un documento repetido da 409 DOCUMENTO_YA_REGISTRADO
+  [OK]    El ciudadano inicia sesión con su documento
+  [OK]    GET /v1/usuarios/yo devuelve al dueño del token
+  [OK]    Sin token: 401 TOKEN_AUSENTE
+  [OK]    Token alterado: 401 TOKEN_INVALIDO
+
+4. Catálogo y validaciones de la solicitud
+  [OK]    El catálogo tiene los 6 tipos acordados
+  [OK]    Sin coordenadas ni dirección: 422
+  [OK]    Latitud sin longitud: 422
+  [OK]    Tipo otro con descripción corta: 422
+  [OK]    Tipo inexistente: 422
+  [OK]    Un operador no crea solicitudes: 403
+
+5. Registro sin duplicados (H10)
+  [OK]    Yeimy registra una solicitud: 201
+  [OK]    Queda pendiente, con código SEN y severidad del tipo (alto)
+  [OK]    El ciudadano y su nombre salen del token
+  [OK]    Reenviar el mismo id: 200 con la misma solicitud
+  [OK]    Otro ciudadano con ese id: 409 ID_EN_USO
+  [OK]    Solicitud enviada 20 minutos tarde queda diferida, con la severidad enviada
+
+6. Bandeja del operador
+  [OK]    La bandeja incluye las solicitudes nuevas
+  [OK]    La crítica va antes que la alta
+  [OK]    El resumen no trae datos del ciudadano
+  [OK]    Filtro por severidad
+  [OK]    Estado archivado ya no existe: 422
+  [OK]    Un ciudadano no ve la bandeja: 403
+  [OK]    El ciudadano ve las suyas
+  [OK]    Un ciudadano no ve solicitudes ajenas: 404
+
+7. Dos operadores toman la misma solicitud a la vez (H9)
+  [OK]    Una toma gana (200) y la otra recibe 409
+  [OK]    El 409 es SOLICITUD_YA_TOMADA con el responsable
+
+8. Cierre, severidad y observaciones
+  [OK]    Quien no es responsable no la cierra: 403 NO_ES_RESPONSABLE
+  [OK]    Cualquier operador reclasifica la severidad
+  [OK]    El operador registra una observación: 201
+  [OK]    Ruta interna sin clave: 401
+  [OK]    Con clave: Yeimy tiene una solicitud activa
+  [OK]    Ruta interna para Recursos: estado y responsable
+  [OK]    El responsable la marca atendida
+  [OK]    El historial guarda pendiente, en_atencion y atendido con el operador
+  [OK]    Atendida no vuelve a en_atencion: 409 TRANSICION_INVALIDA
+  [OK]    Cerrada ya no se reclasifica: 409
+  [OK]    Después de atendida, Yeimy no tiene solicitud activa
+  [OK]    La vista Historial la muestra
+  [OK]    Descartar sin motivo: 422
+  [OK]    Descartar desde pendiente con motivo
+
+9. Límite de solicitudes por ciudadano
+  [OK]    Las 3 primeras pasan y la cuarta recibe 429 con Retry-After
+
+10. Cuentas desactivadas e intentos fallidos
+  [OK]    El administrador desactiva a Laura
+  [OK]    Laura ya no puede iniciar sesión: 403 USUARIO_INACTIVO
+  [OK]    Cuenta inexistente y contraseña errada dan el mismo 401
+  [OK]    Tras 5 intentos fallidos, hasta la contraseña correcta recibe 429
+
+Resultado: 60 verificaciones aprobadas, 0 fallidas.

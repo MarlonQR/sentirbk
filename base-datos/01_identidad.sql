@@ -34,3 +34,8 @@ CREATE TABLE IF NOT EXISTS identidad.intentos_fallidos (
 
 CREATE INDEX IF NOT EXISTS idx_intentos_identificador_fecha
     ON identidad.intentos_fallidos (identificador, fecha);
+
+-- RLS sin políticas: la API pública de Supabase (anon, authenticated) no puede
+-- leer ni escribir. El servicio se conecta como dueño de las tablas y no lo afecta.
+ALTER TABLE identidad.usuarios ENABLE ROW LEVEL SECURITY;
+ALTER TABLE identidad.intentos_fallidos ENABLE ROW LEVEL SECURITY;

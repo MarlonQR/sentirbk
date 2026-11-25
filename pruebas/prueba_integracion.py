@@ -27,13 +27,14 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import requests
 
-IDENTIDAD = os.environ["IDENTIDAD_URL"].rstrip("/")
-ASISTENCIA = os.environ["ASISTENCIA_URL"].rstrip("/")
-ADMIN_CORREO = os.environ["ADMIN_CORREO"]
-ADMIN_CONTRASENA = os.environ["ADMIN_CONTRASENA"]
-CLAVE_SERVICIO = os.environ["CLAVE_SERVICIO"]
-PUERTO_EVENTOS = os.getenv("PUERTO_EVENTOS")
-EVIDENCIA = os.getenv("EVIDENCIA")
+# strip(): al pegar en PowerShell a veces se cuela un salto de línea o un espacio.
+IDENTIDAD = os.environ["IDENTIDAD_URL"].strip().rstrip("/")
+ASISTENCIA = os.environ["ASISTENCIA_URL"].strip().rstrip("/")
+ADMIN_CORREO = os.environ["ADMIN_CORREO"].strip()
+ADMIN_CONTRASENA = os.environ["ADMIN_CONTRASENA"].strip()
+CLAVE_SERVICIO = os.environ["CLAVE_SERVICIO"].strip()
+PUERTO_EVENTOS = os.getenv("PUERTO_EVENTOS", "").strip() or None
+EVIDENCIA = os.getenv("EVIDENCIA", "").strip() or None
 
 lineas = []
 fallas = 0

@@ -84,3 +84,10 @@ CREATE TABLE IF NOT EXISTS asistencia.observaciones (
 );
 
 CREATE INDEX IF NOT EXISTS idx_observaciones_solicitud ON asistencia.observaciones (solicitud_id, fecha);
+
+-- RLS sin políticas: la API pública de Supabase (anon, authenticated) no puede
+-- leer ni escribir. El servicio se conecta como dueño de las tablas y no lo afecta.
+ALTER TABLE asistencia.tipos_emergencia ENABLE ROW LEVEL SECURITY;
+ALTER TABLE asistencia.solicitudes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE asistencia.historial_estados ENABLE ROW LEVEL SECURITY;
+ALTER TABLE asistencia.observaciones ENABLE ROW LEVEL SECURITY;
