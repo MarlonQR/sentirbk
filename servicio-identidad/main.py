@@ -5,7 +5,7 @@ from uuid import UUID
 import bcrypt
 import jwt
 import psycopg2
-from fastapi import Depends, FastAPI, Path, Query
+from fastapi import Depends, FastAPI, Path, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
@@ -97,6 +97,13 @@ def usuario_json(fila) -> dict:
 COLUMNAS = "id, rol, nombre_completo, correo, tipo_documento, numero_documento, activo, creado_en"
 
 
+def ip_cliente(request: Request):
+    # Detrás de Vercel la IP real llega en X-Forwarded-For; la primera es la del cliente.
+    reenviada = request.headers.get("x-forwarded-for", "")
+    ip = reenviada.split(",")[0].strip() if reenviada else (request.client.host if request.client else "")
+    return ip[:45] or None
+
+
 # ==================================================
 # Modelos
 # ==================================================
@@ -163,7 +170,7 @@ def registrar_ciudadano(datos: NuevoCiudadano):
 
 
 @app.post("/v1/sesiones", tags=["Sesiones"], summary="Iniciar sesión y recibir el token")
-def iniciar_sesion(datos: Credenciales):
+def iniciar_sesion(datos: Credenciales, request: Request):
     identificador = datos.identificador.strip().lower() if "@" in datos.identificador else datos.identificador.strip()
     with transaccion() as cur:
         cur.execute(
@@ -188,6 +195,13 @@ def iniciar_sesion(datos: Credenciales):
             cur.execute("INSERT INTO identidad.intentos_fallidos (identificador) VALUES (%s)", (identificador,))
         else:
             cur.execute("DELETE FROM identidad.intentos_fallidos WHERE identificador = %s", (identificador,))
+            # Registro de accesos: quién entró, cuándo y desde dónde.
+            cur.execute(
+                """INSERT INTO identidad.inicios_sesion (usuario_id, resultado, ip, agente)
+                   VALUES (%s, %s, %s, %s)""",
+                (fila[0], "exitoso" if fila[6] else "cuenta_inactiva", ip_cliente(request),
+                 (request.headers.get("user-agent") or "")[:200] or None),
+            )
 
     # Se lanza fuera del bloque para que el intento fallido quede guardado.
     if not valida:
@@ -245,6 +259,28 @@ def listar_operadores(
         )
         filas = cur.fetchall()
     return {"total": total, "pagina": pagina, "limite": limite, "elementos": [usuario_json(f) for f in filas]}
+
+
+@app.get("/v1/usuarios/{id}/inicios-sesion", tags=["Administración"], summary="Registro de inicios de sesión de una cuenta")
+def inicios_sesion(
+    id: Annotated[UUID, Path()],
+    admin: SoloAdministrador,
+    pagina: Annotated[int, Query(ge=1)] = 1,
+    limite: Annotated[int, Query(ge=1, le=100)] = 50,
+):
+    with transaccion() as cur:
+        cur.execute("SELECT 1 FROM identidad.usuarios WHERE id = %s", (str(id),))
+        if cur.fetchone() is None:
+            raise ErrorApi(404, "NO_ENCONTRADO", "No existe una cuenta con ese id.")
+        cur.execute("SELECT count(*) FROM identidad.inicios_sesion WHERE usuario_id = %s", (str(id),))
+        total = cur.fetchone()[0]
+        cur.execute(
+            """SELECT fecha, resultado, ip, agente FROM identidad.inicios_sesion
+               WHERE usuario_id = %s ORDER BY fecha DESC LIMIT %s OFFSET %s""",
+            (str(id), limite, (pagina - 1) * limite),
+        )
+        elementos = [{"fecha": fecha_iso(f), "resultado": r, "ip": ip, "agente": a} for f, r, ip, a in cur.fetchall()]
+    return {"total": total, "pagina": pagina, "limite": limite, "elementos": elementos}
 
 
 @app.patch("/v1/usuarios/{id}", tags=["Administración"], summary="Activar o desactivar una cuenta")

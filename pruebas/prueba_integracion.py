@@ -33,6 +33,7 @@ ASISTENCIA = os.environ["ASISTENCIA_URL"].strip().rstrip("/")
 ADMIN_CORREO = os.environ["ADMIN_CORREO"].strip()
 ADMIN_CONTRASENA = os.environ["ADMIN_CONTRASENA"].strip()
 CLAVE_SERVICIO = os.environ["CLAVE_SERVICIO"].strip()
+PERSONAS = (os.getenv("PERSONAS_URL", "").strip().rstrip("/")) or None
 PUERTO_EVENTOS = os.getenv("PUERTO_EVENTOS", "").strip() or None
 EVIDENCIA = os.getenv("EVIDENCIA", "").strip() or None
 
@@ -91,6 +92,7 @@ sufijo = uuid.uuid4().hex[:8]
 anotar(f"Prueba de integración SENTIR - {ahora_iso()}")
 anotar(f"Identidad:  {IDENTIDAD}")
 anotar(f"Asistencia: {ASISTENCIA}")
+anotar(f"Personas:   {PERSONAS or '(no se prueba)'}")
 anotar(f"Ejecución:  {sufijo}")
 
 anotar("\n1. Los servicios responden")
@@ -279,13 +281,96 @@ for _ in range(4):
 r = requests.post(f"{IDENTIDAD}/v1/sesiones", json={"identificador": camilo["documento"], "contrasena": "Ciudadano-2026"})
 verificar("Tras 5 intentos fallidos, hasta la contraseña correcta recibe 429", r.status_code == 429 and "Retry-After" in r.headers, r.text)
 
+anotar("\n11. Registro de inicios de sesión")
+r = requests.get(f"{IDENTIDAD}/v1/usuarios/{diego['id']}/inicios-sesion", headers=auth(admin))
+verificar("El administrador ve los inicios de sesión de Diego",
+          r.status_code == 200 and r.json()["total"] >= 1 and r.json()["elementos"][0]["resultado"] == "exitoso", r.text)
+r = requests.get(f"{IDENTIDAD}/v1/usuarios/{laura['id']}/inicios-sesion", headers=auth(admin))
+verificar("El intento de Laura con la cuenta desactivada queda registrado",
+          r.status_code == 200 and any(e["resultado"] == "cuenta_inactiva" for e in r.json()["elementos"]), r.text)
+r = requests.get(f"{IDENTIDAD}/v1/usuarios/{diego['id']}/inicios-sesion", headers=auth(diego["token"]))
+verificar("Un operador no ve el registro: 403", r.status_code == 403, r.text)
+
+creadas_extra = 0
+if PERSONAS:
+    anotar("\n12. Personas: autorización, perfil cifrado y acceso del operador")
+    r = requests.get(f"{PERSONAS}/", timeout=30)
+    verificar("Personas responde", r.status_code == 200 and r.json()["servicio"] == "personas", r.text)
+
+    nacimiento = "1992-03-14"
+    hoy = datetime.now(timezone(timedelta(hours=-5))).date()
+    edad_esperada = hoy.year - 1992 - ((hoy.month, hoy.day) < (3, 14))
+    perfil = {
+        "nombre_completo": "Natalia Ascanio", "tipo_documento": "CC", "numero_documento": natalia["documento"],
+        "fecha_nacimiento": nacimiento, "telefono": "+573154567890", "tipo_sangre": "O+",
+        "alergias": ["Penicilina", "Polvo"], "condiciones_cronicas": ["Asma bronquial"], "medicamentos": ["Salbutamol"],
+        "contactos_emergencia": [{"nombre_completo": "Andrés Ropero", "telefono": "+573209876543", "parentesco": "Hermano"}],
+    }
+
+    r = requests.put(f"{PERSONAS}/v1/perfiles/yo", headers=auth(natalia["token"]), json=perfil)
+    verificar("Sin autorización no se guarda el perfil: 403 AUTORIZACION_PENDIENTE",
+              r.status_code == 403 and r.json()["error"]["codigo"] == "AUTORIZACION_PENDIENTE", r.text)
+    r = requests.post(f"{PERSONAS}/v1/autorizaciones", headers=auth(natalia["token"]), json={"version_texto": "2026-11-v1", "acepta": False})
+    verificar("acepta=false no cuenta como autorización: 422", r.status_code == 422, r.text)
+    r = requests.post(f"{PERSONAS}/v1/autorizaciones", headers=auth(natalia["token"]), json={"version_texto": "2026-11-v1", "acepta": True})
+    verificar("Natalia acepta la autorización: 201", r.status_code == 201 and r.json()["version_texto"] == "2026-11-v1", r.text)
+    r = requests.post(f"{PERSONAS}/v1/autorizaciones", headers=auth(natalia["token"]), json={"version_texto": "2026-11-v1", "acepta": True})
+    verificar("Aceptar otra vez la misma versión: 200, sin duplicar", r.status_code == 200, r.text)
+
+    r = requests.put(f"{PERSONAS}/v1/perfiles/yo", headers=auth(natalia["token"]),
+                     json={**perfil, "contactos_emergencia": perfil["contactos_emergencia"] * 4})
+    verificar("Más de 3 contactos: 422", r.status_code == 422, r.text)
+    r = requests.put(f"{PERSONAS}/v1/perfiles/yo", headers=auth(natalia["token"]), json={**perfil, "tipo_sangre": "Z+"})
+    verificar("Tipo de sangre inválido: 422", r.status_code == 422, r.text)
+    r = requests.put(f"{PERSONAS}/v1/perfiles/yo", headers=auth(natalia["token"]), json={**perfil, "fecha_nacimiento": "2999-01-01"})
+    verificar("Fecha de nacimiento futura: 422", r.status_code == 422, r.text)
+
+    r = requests.put(f"{PERSONAS}/v1/perfiles/yo", headers=auth(natalia["token"]), json=perfil)
+    verificar("Natalia guarda su perfil: 200 con la edad calculada",
+              r.status_code == 200 and r.json()["edad"] == edad_esperada and r.json()["alergias"] == ["Penicilina", "Polvo"], r.text)
+    verificar("La respuesta lleva Cache-Control: no-store", r.headers.get("Cache-Control") == "no-store", dict(r.headers))
+    r = requests.get(f"{PERSONAS}/v1/perfiles/yo", headers=auth(natalia["token"]))
+    verificar("Natalia ve su propio perfil", r.status_code == 200 and r.json()["contactos_emergencia"][0]["parentesco"] == "Hermano", r.text)
+
+    r = requests.get(f"{PERSONAS}/v1/perfiles/{natalia['id']}", headers=auth(diego["token"]))
+    activas_natalia = [x.json()["id"] for x in respuestas[:3]]
+    verificar("El operador ve el perfil de Natalia, que tiene solicitudes activas",
+              r.status_code == 200 and r.json()["tipo_sangre"] == "O+" and r.json()["solicitud_id"] in activas_natalia, r.text)
+    r = requests.get(f"{PERSONAS}/v1/perfiles/{natalia['id']}", headers=auth(andres["token"]))
+    verificar("Un ciudadano no ve perfiles ajenos: 403", r.status_code == 403 and r.json()["error"]["codigo"] == "ROL_NO_PERMITIDO", r.text)
+    r = requests.get(f"{PERSONAS}/v1/perfiles/{camilo['id']}", headers=auth(diego["token"]))
+    verificar("Sin solicitud activa no hay perfil: 403 SIN_SOLICITUD_ACTIVA",
+              r.status_code == 403 and r.json()["error"]["codigo"] == "SIN_SOLICITUD_ACTIVA", r.text)
+
+    r = requests.post(f"{ASISTENCIA}/v1/solicitudes", headers=auth(andres["token"]), json=solicitud(tipo="terremoto"))
+    creadas_extra = 1 if r.status_code == 201 else 0
+    r = requests.get(f"{PERSONAS}/v1/perfiles/{andres['id']}", headers=auth(diego["token"]))
+    verificar("Con solicitud activa pero sin perfil: 404 PERFIL_NO_REGISTRADO",
+              r.status_code == 404 and r.json()["error"]["codigo"] == "PERFIL_NO_REGISTRADO", r.text)
+
+    r = requests.get(f"{PERSONAS}/v1/perfiles/{natalia['id']}/accesos", headers=auth(admin))
+    verificar("El administrador ve quién consultó el perfil de Natalia",
+              r.status_code == 200 and r.json()["total"] == 1 and r.json()["elementos"][0]["operador"]["id"] == diego["id"], r.text)
+    r = requests.get(f"{PERSONAS}/v1/perfiles/{natalia['id']}/accesos", headers=auth(diego["token"]))
+    verificar("Un operador no ve la auditoría: 403", r.status_code == 403, r.text)
+
+    r = requests.delete(f"{PERSONAS}/v1/autorizaciones/actual", headers=auth(natalia["token"]))
+    verificar("Natalia retira la autorización: 204", r.status_code == 204, r.text)
+    r = requests.get(f"{PERSONAS}/v1/perfiles/yo", headers=auth(natalia["token"]))
+    verificar("Al retirarla, su perfil se borra", r.status_code == 404, r.text)
+    r = requests.get(f"{PERSONAS}/v1/perfiles/{natalia['id']}", headers=auth(diego["token"]))
+    verificar("El operador ya no lo ve: 404", r.status_code == 404, r.text)
+    r = requests.delete(f"{PERSONAS}/v1/autorizaciones/actual", headers=auth(natalia["token"]))
+    verificar("Retirar otra vez: 404", r.status_code == 404, r.text)
+
 if PUERTO_EVENTOS:
-    anotar("\n11. Eventos publicados en Alertas")
+    anotar("\n13. Eventos publicados en Alertas")
     time.sleep(1)
     nombres = [e["nombre"] for e in eventos]
     verificar("Llegaron eventos con la clave de servicio", eventos and all(e["clave"] == CLAVE_SERVICIO for e in eventos))
     creadas = [e for e in eventos if e["nombre"] == "solicitud.creada"]
-    verificar("Un solicitud.creada por cada solicitud nueva (5), sin repetir el reenvío", len(creadas) == 5, nombres)
+    esperadas = 5 + creadas_extra
+    verificar(f"Un solicitud.creada por cada solicitud nueva ({esperadas}), sin repetir el reenvío", len(creadas) == esperadas, nombres)
     verificar("El evento no lleva datos personales", all("ciudadano" not in e["datos"] and "descripcion" not in e["datos"] for e in creadas))
     cambios = [e["datos"]["estado_nuevo"] for e in eventos if e["nombre"] == "solicitud.estado_cambiado"]
     verificar("Cambios de estado publicados: en_atencion, atendido, descartado", cambios == ["en_atencion", "atendido", "descartado"], cambios)

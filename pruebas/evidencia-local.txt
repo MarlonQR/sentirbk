@@ -1,7 +1,8 @@
-Prueba de integración SENTIR - 2026-11-25T16:52:39Z
+Prueba de integración SENTIR - 2026-11-25T23:33:28Z
 Identidad:  http://127.0.0.1:8001
 Asistencia: http://127.0.0.1:8002
-Ejecución:  1d0229c1
+Personas:   http://127.0.0.1:8003
+Ejecución:  f9e15d0e
 
 1. Los servicios responden
   [OK]    Identidad responde
@@ -83,11 +84,39 @@ Ejecución:  1d0229c1
   [OK]    Cuenta inexistente y contraseña errada dan el mismo 401
   [OK]    Tras 5 intentos fallidos, hasta la contraseña correcta recibe 429
 
-11. Eventos publicados en Alertas
+11. Registro de inicios de sesión
+  [OK]    El administrador ve los inicios de sesión de Diego
+  [OK]    El intento de Laura con la cuenta desactivada queda registrado
+  [OK]    Un operador no ve el registro: 403
+
+12. Personas: autorización, perfil cifrado y acceso del operador
+  [OK]    Personas responde
+  [OK]    Sin autorización no se guarda el perfil: 403 AUTORIZACION_PENDIENTE
+  [OK]    acepta=false no cuenta como autorización: 422
+  [OK]    Natalia acepta la autorización: 201
+  [OK]    Aceptar otra vez la misma versión: 200, sin duplicar
+  [OK]    Más de 3 contactos: 422
+  [OK]    Tipo de sangre inválido: 422
+  [OK]    Fecha de nacimiento futura: 422
+  [OK]    Natalia guarda su perfil: 200 con la edad calculada
+  [OK]    La respuesta lleva Cache-Control: no-store
+  [OK]    Natalia ve su propio perfil
+  [OK]    El operador ve el perfil de Natalia, que tiene solicitudes activas
+  [OK]    Un ciudadano no ve perfiles ajenos: 403
+  [OK]    Sin solicitud activa no hay perfil: 403 SIN_SOLICITUD_ACTIVA
+  [OK]    Con solicitud activa pero sin perfil: 404 PERFIL_NO_REGISTRADO
+  [OK]    El administrador ve quién consultó el perfil de Natalia
+  [OK]    Un operador no ve la auditoría: 403
+  [OK]    Natalia retira la autorización: 204
+  [OK]    Al retirarla, su perfil se borra
+  [OK]    El operador ya no lo ve: 404
+  [OK]    Retirar otra vez: 404
+
+13. Eventos publicados en Alertas
   [OK]    Llegaron eventos con la clave de servicio
-  [OK]    Un solicitud.creada por cada solicitud nueva (5), sin repetir el reenvío
+  [OK]    Un solicitud.creada por cada solicitud nueva (6), sin repetir el reenvío
   [OK]    El evento no lleva datos personales
   [OK]    Cambios de estado publicados: en_atencion, atendido, descartado
   [OK]    Severidad reclasificada publicada
 
-Resultado: 65 verificaciones aprobadas, 0 fallidas.
+Resultado: 89 verificaciones aprobadas, 0 fallidas.
