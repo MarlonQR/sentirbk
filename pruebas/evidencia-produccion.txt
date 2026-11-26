@@ -1,8 +1,9 @@
-Prueba de integración SENTIR - 2026-11-25T23:45:51Z
+Prueba de integración SENTIR - 2026-11-26T00:11:43Z
 Identidad:  https://sentirbk.vercel.app
 Asistencia: https://sentirbk-y7ar.vercel.app
 Personas:   https://sentirbk-ol4u.vercel.app
-Ejecución:  9c808d09
+Recursos:   https://sentirbk-sttl.vercel.app
+Ejecución:  de3c96e0
 
 1. Los servicios responden
   [OK]    Identidad responde
@@ -112,4 +113,35 @@ Ejecución:  9c808d09
   [OK]    El operador ya no lo ve: 404
   [OK]    Retirar otra vez: 404
 
-Resultado: 84 verificaciones aprobadas, 0 fallidas.
+13. Recursos: inventario, unidades cercanas, asignaciones y apoyo
+  [OK]    Recursos responde
+  [OK]    El administrador registra una unidad: 201 disponible
+  [OK]    Nombre repetido: 409 NOMBRE_YA_REGISTRADO
+  [OK]    Un operador no registra unidades: 403
+  [OK]    El administrador pasa una unidad a mantenimiento
+  [OK]    Ocupada no se pone a mano: 422
+  [OK]    El inventario cuadra: estados y categorías suman el total
+  [OK]    Unidades cercanas ordenadas por distancia, con tiempo estimado
+  [OK]    Quien no es responsable no asigna: 403 NO_ES_RESPONSABLE
+  [OK]    A una solicitud pendiente no se le asigna: 409 SOLICITUD_NO_EN_ATENCION
+  [OK]    Una unidad en taller frena toda la asignación: 409 UNIDAD_NO_DISPONIBLE
+  [OK]    Todo o nada: la unidad cercana sigue disponible
+  [OK]    El responsable asigna la unidad cercana: 201
+  [OK]    La misma unidad no se asigna dos veces: 409
+  [OK]    Una unidad ocupada no pasa a mantenimiento: 409 UNIDAD_OCUPADA
+    Apoyo entre compañeros
+  [OK]    La prioridad usa la escala de severidad: 'alta' da 422
+  [OK]    Diego pide apoyo: 201 abierta
+  [OK]    Los demás operadores ven el pedido abierto
+  [OK]    Quien pidió el apoyo no lo atiende él mismo: 403
+  [OK]    Solo quien lo pidió lo cancela: 403
+  [OK]    Otro operador lo atiende enviando su unidad: queda asignada a la emergencia
+  [OK]    Atender otra vez: 409 APOYO_NO_ABIERTO
+  [OK]    Diego cancela su segundo pedido
+    Cierre: liberar unidades
+  [OK]    La emergencia tiene 2 asignaciones activas (la propia y la del apoyo)
+  [OK]    Al finalizar, las unidades vuelven a disponible
+  [OK]    Finalizar otra vez: 409 ASIGNACION_FINALIZADA
+  [OK]    Con la emergencia atendida ya no se asigna: 409
+
+Resultado: 111 verificaciones aprobadas, 0 fallidas.
