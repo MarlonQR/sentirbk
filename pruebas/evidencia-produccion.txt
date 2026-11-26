@@ -1,9 +1,9 @@
-Prueba de integración SENTIR - 2026-11-26T00:11:43Z
+Prueba de integración SENTIR - 2026-11-26T00:41:02Z
 Identidad:  https://sentirbk.vercel.app
 Asistencia: https://sentirbk-y7ar.vercel.app
 Personas:   https://sentirbk-ol4u.vercel.app
 Recursos:   https://sentirbk-sttl.vercel.app
-Ejecución:  de3c96e0
+Ejecución:  daf73501
 
 1. Los servicios responden
   [OK]    Identidad responde
@@ -66,6 +66,7 @@ Ejecución:  de3c96e0
   [OK]    El operador registra una observación: 201
   [OK]    Ruta interna sin clave: 401
   [OK]    Con clave: Yeimy tiene una solicitud activa
+  [OK]    Ruta interna: qué emergencia atiende el operador (su ubicación)
   [OK]    Ruta interna para Recursos: estado y responsable
   [OK]    El responsable la marca atendida
   [OK]    El historial guarda pendiente, en_atencion y atendido con el operador
@@ -129,19 +130,29 @@ Ejecución:  de3c96e0
   [OK]    El responsable asigna la unidad cercana: 201
   [OK]    La misma unidad no se asigna dos veces: 409
   [OK]    Una unidad ocupada no pasa a mantenimiento: 409 UNIDAD_OCUPADA
-    Apoyo entre compañeros
+    Apoyo entre compañeros, por cupos
   [OK]    La prioridad usa la escala de severidad: 'alta' da 422
-  [OK]    Diego pide apoyo: 201 abierta
+  [OK]    Un pedido sin personas no tiene cupos: 422
+  [OK]    Diego pide 3 personas: abierta, faltan 3
+  [OK]    El pedido trae la ubicación de la emergencia, sin que nadie la escriba
   [OK]    Los demás operadores ven el pedido abierto
-  [OK]    Quien pidió el apoyo no lo atiende él mismo: 403
-  [OK]    Solo quien lo pidió lo cancela: 403
-  [OK]    Otro operador lo atiende enviando su unidad: queda asignada a la emergencia
-  [OK]    Atender otra vez: 409 APOYO_NO_ABIERTO
-  [OK]    Diego cancela su segundo pedido
+  [OK]    Camilo no atiende ninguna emergencia: el pedido sale sin distancia
+  [OK]    Natalia atiende otra emergencia a unos 3 km: el pedido muestra esa distancia
+  [OK]    Para Diego, que atiende la misma emergencia, la distancia es 0
+  [OK]    Quien pidió el apoyo no ocupa sus propios cupos: 403
+  [OK]    Camilo se suma solo (1 persona): sigue abierta y faltan 2
+  [OK]    Camilo no acepta dos veces: 409 YA_ACEPTADO
+  [OK]    Natalia se suma con 2 personas y una ambulancia de 4: cuentan 2 y queda cubierta
+  [OK]    El pedido guarda quiénes aceptaron y con cuántas personas
+  [OK]    Cubierto, nadie más se suma: 409 con el mensaje acordado
+  [OK]    Un pedido cubierto ya no se cancela: 409
+  [OK]    Solo quien lo pidió lo cancela: 403 NO_ES_SOLICITANTE
+  [OK]    Diego cancela su segundo pedido a medio cubrir; la aceptación de Camilo se conserva
+  [OK]    A un pedido cancelado nadie se suma: 409 APOYO_CANCELADO
     Cierre: liberar unidades
   [OK]    La emergencia tiene 2 asignaciones activas (la propia y la del apoyo)
   [OK]    Al finalizar, las unidades vuelven a disponible
   [OK]    Finalizar otra vez: 409 ASIGNACION_FINALIZADA
   [OK]    Con la emergencia atendida ya no se asigna: 409
 
-Resultado: 111 verificaciones aprobadas, 0 fallidas.
+Resultado: 122 verificaciones aprobadas, 0 fallidas.
