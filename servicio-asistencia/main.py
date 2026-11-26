@@ -480,6 +480,25 @@ def solicitud_activa(id: Annotated[UUID, Path()]):
     return {"activa": True, "solicitud_id": str(fila[0]), "estado": fila[1]}
 
 
+@app.get("/v1/interno/operadores/{id}/solicitud-activa", tags=["Interno"], dependencies=[Depends(clave_servicio)],
+         summary="¿Qué solicitud está atendiendo el operador?")
+def solicitud_del_operador(id: Annotated[UUID, Path()]):
+    # Recursos la usa como ubicación del operador: quien atiende una emergencia está en ella.
+    with transaccion() as cur:
+        cur.execute(
+            """SELECT id, codigo, latitud, longitud, direccion FROM asistencia.solicitudes
+               WHERE responsable_id = %s AND estado = 'en_atencion'
+               ORDER BY actualizado_en DESC LIMIT 1""",
+            (str(id),),
+        )
+        fila = cur.fetchone()
+    if fila is None:
+        return {"activa": False}
+    id_, codigo, lat, lon, direccion = fila
+    return {"activa": True, "solicitud_id": str(id_), "codigo": codigo,
+            "ubicacion": {"latitud": _numero(lat), "longitud": _numero(lon), "direccion": direccion}}
+
+
 @app.get("/v1/interno/solicitudes/{id}", tags=["Interno"], dependencies=[Depends(clave_servicio)],
          summary="Estado, responsable y ubicación de una solicitud")
 def solicitud_interna(id: Annotated[UUID, Path()]):

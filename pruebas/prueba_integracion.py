@@ -240,6 +240,9 @@ r = requests.get(f"{ASISTENCIA}/v1/interno/ciudadanos/{yeimy['id']}/solicitud-ac
 verificar("Ruta interna sin clave: 401", r.status_code == 401, r.text)
 r = requests.get(f"{ASISTENCIA}/v1/interno/ciudadanos/{yeimy['id']}/solicitud-activa", headers={"X-Clave-Servicio": CLAVE_SERVICIO})
 verificar("Con clave: Yeimy tiene una solicitud activa", r.status_code == 200 and r.json() == {"activa": True, "solicitud_id": sol["id"], "estado": "en_atencion"}, r.text)
+r = requests.get(f"{ASISTENCIA}/v1/interno/operadores/{ganador['id']}/solicitud-activa", headers={"X-Clave-Servicio": CLAVE_SERVICIO})
+verificar("Ruta interna: qué emergencia atiende el operador (su ubicación)",
+          r.status_code == 200 and r.json()["activa"] and r.json()["solicitud_id"] == sol["id"] and r.json()["ubicacion"]["latitud"], r.text)
 r = requests.get(f"{ASISTENCIA}/v1/interno/solicitudes/{sol['id']}", headers={"X-Clave-Servicio": CLAVE_SERVICIO})
 verificar("Ruta interna para Recursos: estado y responsable", r.status_code == 200 and r.json()["responsable_id"] == ganador["id"], r.text)
 r = requests.patch(f"{ASISTENCIA}/v1/solicitudes/{sol['id']}/estado", headers=auth(ganador["token"]), json={"estado": "atendido"})
@@ -366,6 +369,7 @@ if PERSONAS:
     verificar("Retirar otra vez: 404", r.status_code == 404, r.text)
 
 apoyos_publicados = 0
+actualizaciones = 0
 if RECURSOS:
     anotar("\n13. Recursos: inventario, unidades cercanas, asignaciones y apoyo")
     r = requests.get(f"{RECURSOS}/", timeout=30)
@@ -400,8 +404,9 @@ if RECURSOS:
 
     # Emergencia de Camilo, tomada por Diego.
     sol_r = requests.post(f"{ASISTENCIA}/v1/solicitudes", headers=auth(camilo["token"]),
-                          json=solicitud(tipo="derrumbe", ubicacion={"latitud": 7.893912, "longitud": -72.507834}))
-    pendiente_r = requests.post(f"{ASISTENCIA}/v1/solicitudes", headers=auth(camilo["token"]), json=solicitud(tipo="inundacion"))
+                          json=solicitud(tipo="derrumbe", ubicacion=ubicacion))
+    pendiente_r = requests.post(f"{ASISTENCIA}/v1/solicitudes", headers=auth(camilo["token"]),
+                                json=solicitud(tipo="inundacion", ubicacion={"latitud": 7.910000, "longitud": -72.490000}))
     creadas_extra += (sol_r.status_code == 201) + (pendiente_r.status_code == 201)
     emergencia, pendiente_sol = sol_r.json(), pendiente_r.json()
     requests.patch(f"{ASISTENCIA}/v1/solicitudes/{emergencia['id']}/estado", headers=auth(diego["token"]), json={"estado": "en_atencion"})
@@ -437,32 +442,76 @@ if RECURSOS:
     r = requests.patch(f"{RECURSOS}/v1/unidades/{cerca['id']}", headers=auth(admin), json={"estado": "mantenimiento"})
     verificar("Una unidad ocupada no pasa a mantenimiento: 409 UNIDAD_OCUPADA", r.status_code == 409 and r.json()["error"]["codigo"] == "UNIDAD_OCUPADA", r.text)
 
-    anotar("    Apoyo entre compañeros")
-    r = requests.post(f"{RECURSOS}/v1/solicitudes-apoyo", headers=auth(diego["token"]), json={
-        "solicitud_id": emergencia["id"], "tipos_apoyo": ["rescate_busqueda"], "personal_adicional": 2, "prioridad": "alta"})
+    anotar("    Apoyo entre compañeros, por cupos")
+    r = requests.post(f"{IDENTIDAD}/v1/operadores", headers=auth(admin), json={
+        "nombre_completo": "Natalia Ropero", "correo": f"natalia.{sufijo}@sentir.co", "contrasena_temporal": "Turno-Seguro-1"})
+    tercero = {"id": r.json()["id"], "token": requests.post(f"{IDENTIDAD}/v1/sesiones", json={
+        "identificador": f"natalia.{sufijo}@sentir.co", "contrasena": "Turno-Seguro-1"}).json()["token"]}
+    url_apoyo = f"{RECURSOS}/v1/solicitudes-apoyo"
+
+    r = requests.post(url_apoyo, headers=auth(diego["token"]), json={
+        "solicitud_id": emergencia["id"], "tipos_apoyo": ["rescate_busqueda"], "personal_adicional": 3, "prioridad": "alta"})
     verificar("La prioridad usa la escala de severidad: 'alta' da 422", r.status_code == 422, r.text)
-    r = requests.post(f"{RECURSOS}/v1/solicitudes-apoyo", headers=auth(diego["token"]), json={
-        "solicitud_id": emergencia["id"], "tipos_apoyo": ["rescate_busqueda", "atencion_medica"], "personal_adicional": 2,
+    r = requests.post(url_apoyo, headers=auth(diego["token"]), json={
+        "solicitud_id": emergencia["id"], "tipos_apoyo": ["rescate_busqueda"], "personal_adicional": 0, "prioridad": "alto"})
+    verificar("Un pedido sin personas no tiene cupos: 422", r.status_code == 422, r.text)
+    r = requests.post(url_apoyo, headers=auth(diego["token"]), json={
+        "solicitud_id": emergencia["id"], "tipos_apoyo": ["rescate_busqueda", "atencion_medica"], "personal_adicional": 3,
         "prioridad": "alto", "mensaje": "Se necesita equipo con herramientas de corte, hay dos personas atrapadas."})
-    verificar("Diego pide apoyo: 201 abierta", r.status_code == 201 and r.json()["estado"] == "abierta", r.text)
     apoyo = r.json()
+    verificar("Diego pide 3 personas: abierta, faltan 3", r.status_code == 201 and apoyo["estado"] == "abierta" and apoyo["faltan"] == 3, r.text)
+    verificar("El pedido trae la ubicación de la emergencia, sin que nadie la escriba",
+              apoyo.get("ubicacion", {}).get("latitud") == 7.893912 and apoyo["ubicacion"]["direccion"] == ubicacion["direccion"], r.text)
     apoyos_publicados += 1
-    r = requests.get(f"{RECURSOS}/v1/solicitudes-apoyo", headers=auth(otro["token"]), params={"limite": 100})
-    verificar("Los demás operadores ven el pedido abierto", apoyo["id"] in [a["id"] for a in r.json()["elementos"]], r.text[:200])
-    r = requests.patch(f"{RECURSOS}/v1/solicitudes-apoyo/{apoyo['id']}", headers=auth(diego["token"]), json={"estado": "atendida", "unidad_ids": [lejos["id"]]})
-    verificar("Quien pidió el apoyo no lo atiende él mismo: 403", r.status_code == 403 and r.json()["error"]["codigo"] == "ES_EL_SOLICITANTE", r.text)
-    r = requests.patch(f"{RECURSOS}/v1/solicitudes-apoyo/{apoyo['id']}", headers=auth(otro["token"]), json={"estado": "cancelada"})
-    verificar("Solo quien lo pidió lo cancela: 403", r.status_code == 403, r.text)
-    r = requests.patch(f"{RECURSOS}/v1/solicitudes-apoyo/{apoyo['id']}", headers=auth(otro["token"]), json={"estado": "atendida", "unidad_ids": [lejos["id"]]})
-    verificar("Otro operador lo atiende enviando su unidad: queda asignada a la emergencia",
-              r.status_code == 200 and r.json()["estado"] == "atendida" and r.json()["asignacion"]["solicitud_id"] == emergencia["id"], r.text)
-    r = requests.patch(f"{RECURSOS}/v1/solicitudes-apoyo/{apoyo['id']}", headers=auth(otro["token"]), json={"estado": "atendida", "unidad_ids": [cerca["id"]]})
-    verificar("Atender otra vez: 409 APOYO_NO_ABIERTO", r.status_code == 409 and r.json()["error"]["codigo"] == "APOYO_NO_ABIERTO", r.text)
-    r = requests.post(f"{RECURSOS}/v1/solicitudes-apoyo", headers=auth(diego["token"]), json={
-        "solicitud_id": emergencia["id"], "tipos_apoyo": ["logistica_traslado"], "personal_adicional": 0, "prioridad": "medio"})
+    r = requests.get(url_apoyo, headers=auth(otro["token"]), params={"limite": 100})
+    visto = next((a for a in r.json()["elementos"] if a["id"] == apoyo["id"]), None)
+    verificar("Los demás operadores ven el pedido abierto", visto is not None and visto["aceptado_por_mi"] is False, r.text[:200])
+    verificar("Camilo no atiende ninguna emergencia: el pedido sale sin distancia",
+              visto is not None and visto["distancia_km"] is None and r.json()["referencia"] is None, r.text[:200])
+    requests.patch(f"{ASISTENCIA}/v1/solicitudes/{pendiente_sol['id']}/estado", headers=auth(tercero["token"]), json={"estado": "en_atencion"})
+    r = requests.get(url_apoyo, headers=auth(tercero["token"]), params={"orden": "distancia", "limite": 100})
+    visto = next((a for a in r.json()["elementos"] if a["id"] == apoyo["id"]), None)
+    verificar("Natalia atiende otra emergencia a unos 3 km: el pedido muestra esa distancia",
+              visto is not None and 2 < (visto["distancia_km"] or 0) < 4 and r.json()["referencia"]["codigo"] == pendiente_sol["codigo"], r.text[:300])
+    r = requests.get(f"{url_apoyo}/{apoyo['id']}", headers=auth(diego["token"]))
+    verificar("Para Diego, que atiende la misma emergencia, la distancia es 0", r.status_code == 200 and r.json()["distancia_km"] == 0.0, r.text[:200])
+
+    r = requests.post(f"{url_apoyo}/{apoyo['id']}/aceptaciones", headers=auth(diego["token"]), json={})
+    verificar("Quien pidió el apoyo no ocupa sus propios cupos: 403", r.status_code == 403 and r.json()["error"]["codigo"] == "ES_EL_SOLICITANTE", r.text)
+    r = requests.post(f"{url_apoyo}/{apoyo['id']}/aceptaciones", headers=auth(otro["token"]), json={})
+    verificar("Camilo se suma solo (1 persona): sigue abierta y faltan 2",
+              r.status_code == 201 and r.json()["estado"] == "abierta" and r.json()["faltan"] == 2 and r.json()["aceptado_por_mi"], r.text)
+    actualizaciones = 1
+    r = requests.post(f"{url_apoyo}/{apoyo['id']}/aceptaciones", headers=auth(otro["token"]), json={})
+    verificar("Camilo no acepta dos veces: 409 YA_ACEPTADO", r.status_code == 409 and r.json()["error"]["codigo"] == "YA_ACEPTADO", r.text)
+    r = requests.post(f"{url_apoyo}/{apoyo['id']}/aceptaciones", headers=auth(tercero["token"]), json={"personas": 2, "unidad_ids": [lejos["id"]]})
+    verificar("Natalia se suma con 2 personas y una ambulancia de 4: cuentan 2 y queda cubierta",
+              r.status_code == 201 and r.json()["estado"] == "cubierta" and r.json()["faltan"] == 0
+              and r.json()["personal_asignado"] == 3 and r.json()["asignacion"]["solicitud_id"] == emergencia["id"], r.text)
+    actualizaciones += 1
+    verificar("El pedido guarda quiénes aceptaron y con cuántas personas",
+              [(x["operador"]["id"], x["personas"]) for x in r.json()["aceptaciones"]] == [(otro["id"], 1), (tercero["id"], 2)], r.text)
+    r = requests.post(f"{url_apoyo}/{apoyo['id']}/aceptaciones", headers=auth(ganador["token"] if ganador is not diego else perdedor["token"]), json={})
+    verificar("Cubierto, nadie más se suma: 409 con el mensaje acordado",
+              r.status_code == 409 and r.json()["error"]["codigo"] == "APOYO_CUBIERTO"
+              and r.json()["error"]["mensaje"] == "Esta solicitud de apoyo ya está cubierta en su totalidad.", r.text)
+    r = requests.patch(f"{url_apoyo}/{apoyo['id']}", headers=auth(diego["token"]), json={"estado": "cancelada"})
+    verificar("Un pedido cubierto ya no se cancela: 409", r.status_code == 409, r.text)
+
+    r = requests.post(url_apoyo, headers=auth(diego["token"]), json={
+        "solicitud_id": emergencia["id"], "tipos_apoyo": ["logistica_traslado"], "personal_adicional": 2, "prioridad": "medio"})
     apoyos_publicados += r.status_code == 201
-    r = requests.patch(f"{RECURSOS}/v1/solicitudes-apoyo/{r.json()['id']}", headers=auth(diego["token"]), json={"estado": "cancelada"})
-    verificar("Diego cancela su segundo pedido", r.status_code == 200 and r.json()["estado"] == "cancelada", r.text)
+    segundo = r.json()
+    r = requests.post(f"{url_apoyo}/{segundo['id']}/aceptaciones", headers=auth(otro["token"]), json={"personas": 1})
+    actualizaciones += r.status_code == 201
+    r = requests.patch(f"{url_apoyo}/{segundo['id']}", headers=auth(otro["token"]), json={"estado": "cancelada"})
+    verificar("Solo quien lo pidió lo cancela: 403 NO_ES_SOLICITANTE", r.status_code == 403 and r.json()["error"]["codigo"] == "NO_ES_SOLICITANTE", r.text)
+    r = requests.patch(f"{url_apoyo}/{segundo['id']}", headers=auth(diego["token"]), json={"estado": "cancelada"})
+    verificar("Diego cancela su segundo pedido a medio cubrir; la aceptación de Camilo se conserva",
+              r.status_code == 200 and r.json()["estado"] == "cancelada" and len(r.json()["aceptaciones"]) == 1, r.text)
+    actualizaciones += 1
+    r = requests.post(f"{url_apoyo}/{segundo['id']}/aceptaciones", headers=auth(tercero["token"]), json={})
+    verificar("A un pedido cancelado nadie se suma: 409 APOYO_CANCELADO", r.status_code == 409 and r.json()["error"]["codigo"] == "APOYO_CANCELADO", r.text)
 
     anotar("    Cierre: liberar unidades")
     r = requests.get(f"{RECURSOS}/v1/asignaciones", headers=auth(diego["token"]), params={"solicitud_id": emergencia["id"], "estado": "activa"})
@@ -492,11 +541,12 @@ if PUERTO_EVENTOS:
     verificar(f"Un solicitud.creada por cada solicitud nueva ({esperadas}), sin repetir el reenvío", len(creadas) == esperadas, nombres)
     verificar("El evento no lleva datos personales", all("ciudadano" not in e["datos"] and "descripcion" not in e["datos"] for e in creadas))
     cambios = [e["datos"]["estado_nuevo"] for e in eventos if e["nombre"] == "solicitud.estado_cambiado"]
-    esperados = ["en_atencion", "atendido", "descartado"] + (["en_atencion", "atendido"] if RECURSOS else [])
+    esperados = ["en_atencion", "atendido", "descartado"] + (["en_atencion", "en_atencion", "atendido"] if RECURSOS else [])
     verificar("Cambios de estado publicados, en orden", cambios == esperados, cambios)
     verificar("Severidad reclasificada publicada", nombres.count("solicitud.severidad_cambiada") == 1, nombres)
     if RECURSOS:
         verificar(f"Recursos publica apoyo.solicitado ({apoyos_publicados})", nombres.count("apoyo.solicitado") == apoyos_publicados, nombres)
+        verificar(f"Recursos publica apoyo.actualizado ({actualizaciones})", nombres.count("apoyo.actualizado") == actualizaciones, nombres)
 
 anotar(f"\nResultado: {aprobadas} verificaciones aprobadas, {fallas} fallidas.")
 if EVIDENCIA:

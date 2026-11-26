@@ -96,6 +96,24 @@ def consultar_solicitud(solicitud_id: str) -> dict:
     return r.json()
 
 
+def ubicacion_operador(operador_id: str) -> Optional[dict]:
+    """La ubicación de un operador es la de la emergencia que atiende. Sin GPS.
+    Si no atiende ninguna o Asistencia no responde, devuelve None y la lista sale sin distancias."""
+    url = os.getenv("ASISTENCIA_URL", "").strip().rstrip("/")
+    if not url:
+        return None
+    try:
+        r = requests.get(f"{url}/v1/interno/operadores/{operador_id}/solicitud-activa",
+                         headers={"X-Clave-Servicio": _clave()}, timeout=(3, 8))
+        datos = r.json() if r.status_code == 200 else {}
+    except (requests.RequestException, ValueError) as error:
+        print(f"No se pudo consultar la emergencia del operador: {error}")
+        return None
+    if not datos.get("activa") or datos["ubicacion"]["latitud"] is None:
+        return None
+    return {"solicitud_id": datos["solicitud_id"], "codigo": datos["codigo"], **datos["ubicacion"]}
+
+
 def exigir_en_atencion(solicitud: dict, operador: Optional[Usuario] = None):
     if solicitud["estado"] != "en_atencion":
         raise ErrorApi(409, "SOLICITUD_NO_EN_ATENCION",
@@ -161,18 +179,54 @@ def cargar_asignacion(cur, asignacion_id: str) -> dict:
     }
 
 
-COLUMNAS_APOYO = """id, solicitud_id, codigo_solicitud, tipos_apoyo, personal_adicional, prioridad, mensaje, estado,
-    solicitante_id, solicitante_nombre, creada_en, cerrada_por_id, cerrada_por_nombre, cerrada_en"""
+COLUMNAS_APOYO = """id, solicitud_id, codigo_solicitud, tipos_apoyo, personal_adicional, personal_asignado, prioridad,
+    mensaje, estado, solicitante_id, solicitante_nombre, creada_en, cerrada_por_id, cerrada_por_nombre, cerrada_en,
+    solicitud_latitud, solicitud_longitud, solicitud_direccion"""
 
 
 def apoyo_json(fila) -> dict:
-    (id_, sol, codigo, tipos, personal, prioridad, mensaje, estado, s_id, s_nombre, creada, c_id, c_nombre, cerrada) = fila
+    (id_, sol, codigo, tipos, requerido, asignado, prioridad, mensaje, estado, s_id, s_nombre, creada,
+     c_id, c_nombre, cerrada, lat, lon, direccion) = fila
     return {
         "id": str(id_), "solicitud_id": str(sol), "codigo_solicitud": codigo, "tipos_apoyo": list(tipos),
-        "personal_adicional": personal, "prioridad": prioridad, "mensaje": mensaje, "estado": estado,
+        "personal_adicional": requerido, "personal_asignado": asignado, "faltan": max(0, requerido - asignado),
+        "prioridad": prioridad, "mensaje": mensaje, "estado": estado,
+        "ubicacion": {"latitud": _num(lat), "longitud": _num(lon), "direccion": direccion},
         "solicitante": {"id": str(s_id), "nombre_completo": s_nombre}, "creada_en": fecha_iso(creada),
         "cerrada_por": {"id": str(c_id), "nombre_completo": c_nombre} if c_id else None, "cerrada_en": fecha_iso(cerrada),
     }
+
+
+def cargar_apoyos(cur, filas, operador_id: str, referencia: Optional[dict] = None) -> list:
+    """Agrega a cada pedido quiénes aceptaron, si el operador actual ya lo hizo y, si el operador
+    atiende una emergencia, a qué distancia está de ella."""
+    apoyos = [apoyo_json(f) for f in filas]
+    for a in apoyos:
+        u = a["ubicacion"]
+        a["distancia_km"] = (round(distancia_km(referencia["latitud"], referencia["longitud"], u["latitud"], u["longitud"]), 1)
+                             if referencia and u["latitud"] is not None else None)
+    if not apoyos:
+        return apoyos
+    cur.execute(
+        """SELECT apoyo_id, operador_id, operador_nombre, personas, asignacion_id, fecha
+           FROM recursos.aceptaciones_apoyo WHERE apoyo_id = ANY(%s::uuid[]) ORDER BY fecha, id""",
+        ([a["id"] for a in apoyos],),
+    )
+    por_apoyo = {}
+    for apoyo_id, op_id, op_nombre, personas, asignacion_id, fecha in cur.fetchall():
+        por_apoyo.setdefault(str(apoyo_id), []).append({
+            "operador": {"id": str(op_id), "nombre_completo": op_nombre}, "personas": personas,
+            "asignacion_id": str(asignacion_id) if asignacion_id else None, "fecha": fecha_iso(fecha),
+        })
+    for a in apoyos:
+        a["aceptaciones"] = por_apoyo.get(a["id"], [])
+        a["aceptado_por_mi"] = any(x["operador"]["id"] == operador_id for x in a["aceptaciones"])
+    return apoyos
+
+
+def evento_apoyo(apoyo: dict) -> dict:
+    return {k: apoyo[k] for k in ("id", "solicitud_id", "codigo_solicitud", "personal_adicional",
+                                  "personal_asignado", "faltan", "estado")}
 
 
 def crear_asignacion(cur, solicitud: dict, unidad_ids: list, operador: Usuario, apoyo_id: Optional[str] = None) -> str:
@@ -252,15 +306,19 @@ class CambioAsignacion(BaseModel):
 class NuevoApoyo(BaseModel):
     solicitud_id: UUID
     tipos_apoyo: list[Especialidad] = Field(min_length=1, max_length=4, examples=[["rescate_busqueda", "logistica_traslado"]])
-    personal_adicional: int = Field(ge=0, le=100, examples=[2])
+    personal_adicional: int = Field(ge=1, le=100, examples=[3], description="Personas que faltan. Son los cupos del pedido.")
     prioridad: Prioridad = Field(examples=["alto"])
     mensaje: Optional[str] = Field(None, max_length=500, examples=["Se necesita equipo con herramientas de corte, hay dos personas atrapadas."])
 
 
 class CambioApoyo(BaseModel):
-    estado: Literal["atendida", "cancelada"]
+    estado: Literal["cancelada"]
+
+
+class Aceptacion(BaseModel):
+    personas: int = Field(1, ge=1, le=100, description="Personas con las que se suma. Es lo único que cuenta para los cupos.")
     unidad_ids: Optional[list[UUID]] = Field(None, min_length=1, max_length=MAX_UNIDADES,
-                                             description="Obligatorio para atendida: las unidades que se envían.")
+                                             description="Opcional: vehículos o equipos que también envía. No cambian el conteo de personas.")
 
 
 # ==================================================
@@ -439,10 +497,19 @@ def finalizar_asignacion(id: Annotated[UUID, Path()], datos: CambioAsignacion, u
         )
         return cargar_asignacion(cur, str(id))
 
+# ==================================================
+# Apoyo entre compañeros (por cupos, H21)
+# ==================================================
 
-# ==================================================
-# Apoyo entre compañeros
-# ==================================================
+MENSAJE_CUBIERTA = "Esta solicitud de apoyo ya está cubierta en su totalidad."
+
+
+def leer_apoyo(cur, apoyo_id: str, operador_id: str, bloquear: bool = False, referencia: Optional[dict] = None) -> Optional[dict]:
+    cur.execute(f"SELECT {COLUMNAS_APOYO} FROM recursos.solicitudes_apoyo WHERE id = %s" + (" FOR UPDATE" if bloquear else ""),
+                (apoyo_id,))
+    fila = cur.fetchone()
+    return cargar_apoyos(cur, [fila], operador_id, referencia)[0] if fila else None
+
 
 @app.post("/v1/solicitudes-apoyo", status_code=201, tags=["Apoyo"], summary="Pedir refuerzos (pantalla 5)")
 def pedir_apoyo(datos: NuevoApoyo, operador: Operador):
@@ -450,17 +517,18 @@ def pedir_apoyo(datos: NuevoApoyo, operador: Operador):
     exigir_en_atencion(solicitud, operador)
     with transaccion() as cur:
         cur.execute(
-            f"""INSERT INTO recursos.solicitudes_apoyo (solicitud_id, codigo_solicitud, tipos_apoyo, personal_adicional,
-                                                        prioridad, mensaje, solicitante_id, solicitante_nombre)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING {COLUMNAS_APOYO}""",
+            """INSERT INTO recursos.solicitudes_apoyo (solicitud_id, codigo_solicitud, tipos_apoyo, personal_adicional,
+                                                       prioridad, mensaje, solicitante_id, solicitante_nombre,
+                                                       solicitud_latitud, solicitud_longitud, solicitud_direccion)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
             (solicitud["id"], solicitud["codigo"], list(dict.fromkeys(datos.tipos_apoyo)), datos.personal_adicional,
-             datos.prioridad, (datos.mensaje or "").strip() or None, operador.id, operador.nombre),
+             datos.prioridad, (datos.mensaje or "").strip() or None, operador.id, operador.nombre,
+             solicitud["ubicacion"]["latitud"], solicitud["ubicacion"]["longitud"], solicitud["ubicacion"]["direccion"]),
         )
-        apoyo = apoyo_json(cur.fetchone())
+        apoyo = leer_apoyo(cur, str(cur.fetchone()[0]), operador.id)
     publicar_evento("apoyo.solicitado", {
-        "id": apoyo["id"], "solicitud_id": apoyo["solicitud_id"], "codigo_solicitud": apoyo["codigo_solicitud"],
-        "tipos_apoyo": apoyo["tipos_apoyo"], "personal_adicional": apoyo["personal_adicional"],
-        "prioridad": apoyo["prioridad"], "solicitante": apoyo["solicitante"],
+        **evento_apoyo(apoyo), "tipos_apoyo": apoyo["tipos_apoyo"], "prioridad": apoyo["prioridad"],
+        "solicitante": apoyo["solicitante"],
     })
     return apoyo
 
@@ -468,59 +536,109 @@ def pedir_apoyo(datos: NuevoApoyo, operador: Operador):
 @app.get("/v1/solicitudes-apoyo", tags=["Apoyo"], summary="Ver pedidos de refuerzo")
 def listar_apoyos(
     operador: Operador,
-    estado: Literal["abierta", "atendida", "cancelada"] = "abierta",
+    estado: Literal["abierta", "cubierta", "cancelada"] = "abierta",
+    orden: Annotated[Literal["prioridad", "distancia"], Query(description="distancia: los más cercanos a la emergencia que atiende el operador primero.")] = "prioridad",
     pagina: Annotated[int, Query(ge=1)] = 1,
     limite: Annotated[int, Query(ge=1, le=100)] = 50,
 ):
+    referencia = ubicacion_operador(operador.id)
     with transaccion() as cur:
-        cur.execute("SELECT count(*) FROM recursos.solicitudes_apoyo WHERE estado = %s", (estado,))
-        total = cur.fetchone()[0]
         cur.execute(
             f"""SELECT {COLUMNAS_APOYO} FROM recursos.solicitudes_apoyo WHERE estado = %s
-                ORDER BY CASE prioridad WHEN 'critico' THEN 1 WHEN 'alto' THEN 2 WHEN 'medio' THEN 3 ELSE 4 END, creada_en
-                LIMIT %s OFFSET %s""",
-            (estado, limite, (pagina - 1) * limite),
+                ORDER BY CASE prioridad WHEN 'critico' THEN 1 WHEN 'alto' THEN 2 WHEN 'medio' THEN 3 ELSE 4 END, creada_en""",
+            (estado,),
         )
-        return {"total": total, "pagina": pagina, "limite": limite, "elementos": [apoyo_json(f) for f in cur.fetchall()]}
+        apoyos = cargar_apoyos(cur, cur.fetchall(), operador.id, referencia)
+    if orden == "distancia":
+        apoyos.sort(key=lambda a: (a["distancia_km"] is None, a["distancia_km"] or 0))
+    inicio = (pagina - 1) * limite
+    return {"total": len(apoyos), "pagina": pagina, "limite": limite,
+            "referencia": {"solicitud_id": referencia["solicitud_id"], "codigo": referencia["codigo"]} if referencia else None,
+            "elementos": apoyos[inicio:inicio + limite]}
 
 
-@app.patch("/v1/solicitudes-apoyo/{id}", tags=["Apoyo"], summary="Atender o cancelar un pedido de refuerzo")
-def cerrar_apoyo(id: Annotated[UUID, Path()], datos: CambioApoyo, operador: Operador):
-    if datos.estado == "atendida" and not datos.unidad_ids:
-        raise ErrorApi(422, "DATOS_INVALIDOS", "Los datos enviados no cumplen el contrato.",
-                       [{"campo": "unidad_ids", "problema": "Para atender el pedido hay que indicar las unidades que se envían."}])
-
+@app.get("/v1/solicitudes-apoyo/{id}", tags=["Apoyo"], summary="Detalle de un pedido de refuerzo")
+def detalle_apoyo(id: Annotated[UUID, Path()], operador: Operador):
+    referencia = ubicacion_operador(operador.id)
     with transaccion() as cur:
-        cur.execute(f"SELECT {COLUMNAS_APOYO} FROM recursos.solicitudes_apoyo WHERE id = %s", (str(id),))
-        fila = cur.fetchone()
-    if fila is None:
+        apoyo = leer_apoyo(cur, str(id), operador.id, referencia=referencia)
+    if apoyo is None:
         raise ErrorApi(404, "NO_ENCONTRADO", "No existe un pedido de apoyo con ese id.")
-    apoyo = apoyo_json(fila)
-    es_solicitante = apoyo["solicitante"]["id"] == operador.id
-    if datos.estado == "cancelada" and not es_solicitante:
-        raise ErrorApi(403, "NO_ES_SOLICITANTE", "Solo quien pidió el apoyo puede cancelarlo.")
-    if datos.estado == "atendida" and es_solicitante:
-        raise ErrorApi(403, "ES_EL_SOLICITANTE", "El pedido de apoyo lo atiende otro operador; para enviar sus propias unidades use POST /v1/asignaciones.")
+    return apoyo
 
-    solicitud = consultar_solicitud(apoyo["solicitud_id"]) if datos.estado == "atendida" else None
-    if solicitud:
-        exigir_en_atencion(solicitud)
+
+@app.post("/v1/solicitudes-apoyo/{id}/aceptaciones", status_code=201, tags=["Apoyo"],
+          summary="Sumarse a un pedido de refuerzo (ocupar cupos)")
+def aceptar_apoyo(id: Annotated[UUID, Path()], datos: Aceptacion, operador: Operador):
+    with transaccion() as cur:
+        apoyo = leer_apoyo(cur, str(id), operador.id)
+    if apoyo is None:
+        raise ErrorApi(404, "NO_ENCONTRADO", "No existe un pedido de apoyo con ese id.")
+    if apoyo["solicitante"]["id"] == operador.id:
+        raise ErrorApi(403, "ES_EL_SOLICITANTE",
+                       "Usted pidió este apoyo; para enviar sus propias unidades use POST /v1/asignaciones.")
+    # La emergencia tiene que seguir en atención para que tenga sentido sumarse.
+    solicitud = consultar_solicitud(apoyo["solicitud_id"])
+    exigir_en_atencion(solicitud)
 
     with transaccion() as cur:
-        # FOR UPDATE: si dos operadores atienden el mismo pedido, el segundo ve que ya no está abierto.
-        cur.execute("SELECT estado FROM recursos.solicitudes_apoyo WHERE id = %s FOR UPDATE", (str(id),))
-        if cur.fetchone()[0] != "abierta":
-            raise ErrorApi(409, "APOYO_NO_ABIERTO", "El pedido de apoyo ya fue atendido o cancelado.")
-        asignacion = None
-        if datos.estado == "atendida":
+        # FOR UPDATE: si dos operadores toman el último cupo a la vez, el segundo espera y ve el pedido cubierto.
+        apoyo = leer_apoyo(cur, str(id), operador.id, bloquear=True)
+        if apoyo["estado"] == "cubierta":
+            raise ErrorApi(409, "APOYO_CUBIERTO", MENSAJE_CUBIERTA,
+                           {"personal_adicional": apoyo["personal_adicional"], "personal_asignado": apoyo["personal_asignado"]})
+        if apoyo["estado"] == "cancelada":
+            raise ErrorApi(409, "APOYO_CANCELADO", "Quien pidió este apoyo lo canceló.")
+        if apoyo["aceptado_por_mi"]:
+            raise ErrorApi(409, "YA_ACEPTADO", "Usted ya se sumó a este pedido de apoyo.")
+
+        # Los cupos se cuentan por las personas que declara el operador (respuesta de Tópicos).
+        # Las unidades que envíe quedan asignadas a la emergencia, pero no cambian el conteo.
+        asignacion, asignacion_id, personas = None, None, datos.personas
+        if datos.unidad_ids:
             asignacion_id = crear_asignacion(cur, solicitud, datos.unidad_ids, operador, str(id))
             asignacion = cargar_asignacion(cur, asignacion_id)
+
         cur.execute(
-            """UPDATE recursos.solicitudes_apoyo SET estado = %s, cerrada_por_id = %s, cerrada_por_nombre = %s, cerrada_en = now()
-               WHERE id = %s""",
-            (datos.estado, operador.id, operador.nombre, str(id)),
+            """INSERT INTO recursos.aceptaciones_apoyo (apoyo_id, operador_id, operador_nombre, personas, asignacion_id)
+               VALUES (%s, %s, %s, %s, %s)""",
+            (str(id), operador.id, operador.nombre, personas, asignacion_id),
         )
-        cur.execute(f"SELECT {COLUMNAS_APOYO} FROM recursos.solicitudes_apoyo WHERE id = %s", (str(id),))
-        respuesta = apoyo_json(cur.fetchone())
-    respuesta["asignacion"] = asignacion
-    return respuesta
+        cur.execute(
+            """UPDATE recursos.solicitudes_apoyo
+               SET personal_asignado = personal_asignado + %s,
+                   estado = CASE WHEN personal_asignado + %s >= personal_adicional THEN 'cubierta' ELSE estado END,
+                   cerrada_por_id = CASE WHEN personal_asignado + %s >= personal_adicional THEN %s::uuid ELSE cerrada_por_id END,
+                   cerrada_por_nombre = CASE WHEN personal_asignado + %s >= personal_adicional THEN %s ELSE cerrada_por_nombre END,
+                   cerrada_en = CASE WHEN personal_asignado + %s >= personal_adicional THEN now() ELSE cerrada_en END
+               WHERE id = %s""",
+            (personas, personas, personas, operador.id, personas, operador.nombre, personas, str(id)),
+        )
+        apoyo = leer_apoyo(cur, str(id), operador.id)
+
+    publicar_evento("apoyo.actualizado", evento_apoyo(apoyo))
+    apoyo["asignacion"] = asignacion
+    return apoyo
+
+
+@app.patch("/v1/solicitudes-apoyo/{id}", tags=["Apoyo"], summary="Cancelar un pedido de refuerzo")
+def cancelar_apoyo(id: Annotated[UUID, Path()], datos: CambioApoyo, operador: Operador):
+    with transaccion() as cur:
+        apoyo = leer_apoyo(cur, str(id), operador.id, bloquear=True)
+        if apoyo is None:
+            raise ErrorApi(404, "NO_ENCONTRADO", "No existe un pedido de apoyo con ese id.")
+        if apoyo["solicitante"]["id"] != operador.id:
+            raise ErrorApi(403, "NO_ES_SOLICITANTE", "Solo quien pidió el apoyo puede cancelarlo.")
+        if apoyo["estado"] == "cubierta":
+            raise ErrorApi(409, "APOYO_CUBIERTO", MENSAJE_CUBIERTA)
+        if apoyo["estado"] == "cancelada":
+            raise ErrorApi(409, "APOYO_CANCELADO", "El pedido ya estaba cancelado.")
+        # Quienes ya aceptaron siguen yendo: cancelar solo cierra los cupos que faltan.
+        cur.execute(
+            """UPDATE recursos.solicitudes_apoyo SET estado = 'cancelada', cerrada_por_id = %s,
+                      cerrada_por_nombre = %s, cerrada_en = now() WHERE id = %s""",
+            (operador.id, operador.nombre, str(id)),
+        )
+        apoyo = leer_apoyo(cur, str(id), operador.id)
+    publicar_evento("apoyo.actualizado", evento_apoyo(apoyo))
+    return apoyo
