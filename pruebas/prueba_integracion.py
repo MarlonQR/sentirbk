@@ -34,6 +34,7 @@ ADMIN_CORREO = os.environ["ADMIN_CORREO"].strip()
 ADMIN_CONTRASENA = os.environ["ADMIN_CONTRASENA"].strip()
 CLAVE_SERVICIO = os.environ["CLAVE_SERVICIO"].strip()
 PERSONAS = (os.getenv("PERSONAS_URL", "").strip().rstrip("/")) or None
+RECURSOS = (os.getenv("RECURSOS_URL", "").strip().rstrip("/")) or None
 PUERTO_EVENTOS = os.getenv("PUERTO_EVENTOS", "").strip() or None
 EVIDENCIA = os.getenv("EVIDENCIA", "").strip() or None
 
@@ -93,6 +94,7 @@ anotar(f"Prueba de integración SENTIR - {ahora_iso()}")
 anotar(f"Identidad:  {IDENTIDAD}")
 anotar(f"Asistencia: {ASISTENCIA}")
 anotar(f"Personas:   {PERSONAS or '(no se prueba)'}")
+anotar(f"Recursos:   {RECURSOS or '(no se prueba)'}")
 anotar(f"Ejecución:  {sufijo}")
 
 anotar("\n1. Los servicios responden")
@@ -363,8 +365,125 @@ if PERSONAS:
     r = requests.delete(f"{PERSONAS}/v1/autorizaciones/actual", headers=auth(natalia["token"]))
     verificar("Retirar otra vez: 404", r.status_code == 404, r.text)
 
+apoyos_publicados = 0
+if RECURSOS:
+    anotar("\n13. Recursos: inventario, unidades cercanas, asignaciones y apoyo")
+    r = requests.get(f"{RECURSOS}/", timeout=30)
+    verificar("Recursos responde", r.status_code == 200 and r.json()["servicio"] == "recursos", r.text)
+
+    # Unidades propias de esta ejecución, cerca y lejos del punto de la emergencia.
+    def nueva_unidad(nombre, categoria, especialidades, lat, lon):
+        return requests.post(f"{RECURSOS}/v1/unidades", headers=auth(admin), json={
+            "nombre": f"[Prueba {sufijo}] {nombre}", "categoria": categoria, "especialidades": especialidades,
+            "personal": 4, "base": {"latitud": lat, "longitud": lon, "direccion": "Cúcuta"}})
+
+    r = nueva_unidad("Brigada cercana", "brigada", ["rescate_busqueda"], 7.8950, -72.5080)
+    verificar("El administrador registra una unidad: 201 disponible", r.status_code == 201 and r.json()["estado"] == "disponible", r.text)
+    cerca = r.json()
+    lejos = nueva_unidad("Ambulancia lejana", "vehiculo_socorro", ["atencion_medica", "rescate_busqueda"], 7.9400, -72.4700).json()
+    taller = nueva_unidad("Máquina en taller", "vehiculo_socorro", ["control_incendio"], 7.8960, -72.5090).json()
+    r = nueva_unidad("Brigada cercana", "brigada", [], 7.8, -72.5)
+    verificar("Nombre repetido: 409 NOMBRE_YA_REGISTRADO", r.status_code == 409 and r.json()["error"]["codigo"] == "NOMBRE_YA_REGISTRADO", r.text)
+    r = requests.post(f"{RECURSOS}/v1/unidades", headers=auth(diego["token"]), json={"nombre": "Intrusa", "categoria": "brigada"})
+    verificar("Un operador no registra unidades: 403", r.status_code == 403, r.text)
+    r = requests.patch(f"{RECURSOS}/v1/unidades/{taller['id']}", headers=auth(admin), json={"estado": "mantenimiento"})
+    verificar("El administrador pasa una unidad a mantenimiento", r.status_code == 200 and r.json()["estado"] == "mantenimiento", r.text)
+    r = requests.patch(f"{RECURSOS}/v1/unidades/{taller['id']}", headers=auth(admin), json={"estado": "ocupada"})
+    verificar("Ocupada no se pone a mano: 422", r.status_code == 422, r.text)
+
+    r = requests.get(f"{RECURSOS}/v1/inventario", headers=auth(diego["token"]))
+    inv = r.json()
+    verificar("El inventario cuadra: estados y categorías suman el total",
+              r.status_code == 200 and sum(inv["por_estado"].values()) == inv["total_unidades"]
+              and sum(c["total"] for c in inv["por_categoria"]) == inv["total_unidades"]
+              and inv["operativas"] == inv["por_estado"]["disponible"] + inv["por_estado"]["ocupada"], r.text)
+
+    # Emergencia de Camilo, tomada por Diego.
+    sol_r = requests.post(f"{ASISTENCIA}/v1/solicitudes", headers=auth(camilo["token"]),
+                          json=solicitud(tipo="derrumbe", ubicacion={"latitud": 7.893912, "longitud": -72.507834}))
+    pendiente_r = requests.post(f"{ASISTENCIA}/v1/solicitudes", headers=auth(camilo["token"]), json=solicitud(tipo="inundacion"))
+    creadas_extra += (sol_r.status_code == 201) + (pendiente_r.status_code == 201)
+    emergencia, pendiente_sol = sol_r.json(), pendiente_r.json()
+    requests.patch(f"{ASISTENCIA}/v1/solicitudes/{emergencia['id']}/estado", headers=auth(diego["token"]), json={"estado": "en_atencion"})
+
+    r = requests.get(f"{RECURSOS}/v1/unidades", headers=auth(diego["token"]),
+                     params={"cerca_de": emergencia["id"], "especialidad": "rescate_busqueda", "limite": 100})
+    nombres = [u["nombre"] for u in r.json().get("elementos", [])]
+    verificar("Unidades cercanas ordenadas por distancia, con tiempo estimado",
+              r.status_code == 200 and nombres.index(cerca["nombre"]) < nombres.index(lejos["nombre"])
+              and r.json()["elementos"][0]["distancia_km"] is not None and r.json()["elementos"][0]["tiempo_estimado_min"] >= 1, r.text[:300])
+
+    r = requests.post(f"{IDENTIDAD}/v1/operadores", headers=auth(admin), json={
+        "nombre_completo": "Camilo Pacheco", "correo": f"camilo.{sufijo}@sentir.co", "contrasena_temporal": "Turno-Seguro-1"})
+    otro = {"id": r.json()["id"], "token": requests.post(f"{IDENTIDAD}/v1/sesiones", json={
+        "identificador": f"camilo.{sufijo}@sentir.co", "contrasena": "Turno-Seguro-1"}).json()["token"]}
+
+    r = requests.post(f"{RECURSOS}/v1/asignaciones", headers=auth(otro["token"]), json={"solicitud_id": emergencia["id"], "unidad_ids": [cerca["id"]]})
+    verificar("Quien no es responsable no asigna: 403 NO_ES_RESPONSABLE", r.status_code == 403 and r.json()["error"]["codigo"] == "NO_ES_RESPONSABLE", r.text)
+    r = requests.post(f"{RECURSOS}/v1/asignaciones", headers=auth(diego["token"]), json={"solicitud_id": pendiente_sol["id"], "unidad_ids": [cerca["id"]]})
+    verificar("A una solicitud pendiente no se le asigna: 409 SOLICITUD_NO_EN_ATENCION",
+              r.status_code == 409 and r.json()["error"]["codigo"] == "SOLICITUD_NO_EN_ATENCION", r.text)
+    r = requests.post(f"{RECURSOS}/v1/asignaciones", headers=auth(diego["token"]), json={"solicitud_id": emergencia["id"], "unidad_ids": [cerca["id"], taller["id"]]})
+    verificar("Una unidad en taller frena toda la asignación: 409 UNIDAD_NO_DISPONIBLE",
+              r.status_code == 409 and r.json()["error"]["detalles"]["no_disponibles"][0]["estado"] == "mantenimiento", r.text)
+    r = requests.get(f"{RECURSOS}/v1/unidades", headers=auth(diego["token"]), params={"estado": "disponible", "limite": 100})
+    verificar("Todo o nada: la unidad cercana sigue disponible", cerca["id"] in [u["id"] for u in r.json()["elementos"]], r.text[:200])
+
+    r = requests.post(f"{RECURSOS}/v1/asignaciones", headers=auth(diego["token"]), json={"solicitud_id": emergencia["id"], "unidad_ids": [cerca["id"]]})
+    verificar("El responsable asigna la unidad cercana: 201", r.status_code == 201 and r.json()["unidades"][0]["estado"] == "ocupada", r.text)
+    asignacion = r.json()
+    r = requests.post(f"{RECURSOS}/v1/asignaciones", headers=auth(diego["token"]), json={"solicitud_id": emergencia["id"], "unidad_ids": [cerca["id"]]})
+    verificar("La misma unidad no se asigna dos veces: 409", r.status_code == 409, r.text)
+    r = requests.patch(f"{RECURSOS}/v1/unidades/{cerca['id']}", headers=auth(admin), json={"estado": "mantenimiento"})
+    verificar("Una unidad ocupada no pasa a mantenimiento: 409 UNIDAD_OCUPADA", r.status_code == 409 and r.json()["error"]["codigo"] == "UNIDAD_OCUPADA", r.text)
+
+    anotar("    Apoyo entre compañeros")
+    r = requests.post(f"{RECURSOS}/v1/solicitudes-apoyo", headers=auth(diego["token"]), json={
+        "solicitud_id": emergencia["id"], "tipos_apoyo": ["rescate_busqueda"], "personal_adicional": 2, "prioridad": "alta"})
+    verificar("La prioridad usa la escala de severidad: 'alta' da 422", r.status_code == 422, r.text)
+    r = requests.post(f"{RECURSOS}/v1/solicitudes-apoyo", headers=auth(diego["token"]), json={
+        "solicitud_id": emergencia["id"], "tipos_apoyo": ["rescate_busqueda", "atencion_medica"], "personal_adicional": 2,
+        "prioridad": "alto", "mensaje": "Se necesita equipo con herramientas de corte, hay dos personas atrapadas."})
+    verificar("Diego pide apoyo: 201 abierta", r.status_code == 201 and r.json()["estado"] == "abierta", r.text)
+    apoyo = r.json()
+    apoyos_publicados += 1
+    r = requests.get(f"{RECURSOS}/v1/solicitudes-apoyo", headers=auth(otro["token"]), params={"limite": 100})
+    verificar("Los demás operadores ven el pedido abierto", apoyo["id"] in [a["id"] for a in r.json()["elementos"]], r.text[:200])
+    r = requests.patch(f"{RECURSOS}/v1/solicitudes-apoyo/{apoyo['id']}", headers=auth(diego["token"]), json={"estado": "atendida", "unidad_ids": [lejos["id"]]})
+    verificar("Quien pidió el apoyo no lo atiende él mismo: 403", r.status_code == 403 and r.json()["error"]["codigo"] == "ES_EL_SOLICITANTE", r.text)
+    r = requests.patch(f"{RECURSOS}/v1/solicitudes-apoyo/{apoyo['id']}", headers=auth(otro["token"]), json={"estado": "cancelada"})
+    verificar("Solo quien lo pidió lo cancela: 403", r.status_code == 403, r.text)
+    r = requests.patch(f"{RECURSOS}/v1/solicitudes-apoyo/{apoyo['id']}", headers=auth(otro["token"]), json={"estado": "atendida", "unidad_ids": [lejos["id"]]})
+    verificar("Otro operador lo atiende enviando su unidad: queda asignada a la emergencia",
+              r.status_code == 200 and r.json()["estado"] == "atendida" and r.json()["asignacion"]["solicitud_id"] == emergencia["id"], r.text)
+    r = requests.patch(f"{RECURSOS}/v1/solicitudes-apoyo/{apoyo['id']}", headers=auth(otro["token"]), json={"estado": "atendida", "unidad_ids": [cerca["id"]]})
+    verificar("Atender otra vez: 409 APOYO_NO_ABIERTO", r.status_code == 409 and r.json()["error"]["codigo"] == "APOYO_NO_ABIERTO", r.text)
+    r = requests.post(f"{RECURSOS}/v1/solicitudes-apoyo", headers=auth(diego["token"]), json={
+        "solicitud_id": emergencia["id"], "tipos_apoyo": ["logistica_traslado"], "personal_adicional": 0, "prioridad": "medio"})
+    apoyos_publicados += r.status_code == 201
+    r = requests.patch(f"{RECURSOS}/v1/solicitudes-apoyo/{r.json()['id']}", headers=auth(diego["token"]), json={"estado": "cancelada"})
+    verificar("Diego cancela su segundo pedido", r.status_code == 200 and r.json()["estado"] == "cancelada", r.text)
+
+    anotar("    Cierre: liberar unidades")
+    r = requests.get(f"{RECURSOS}/v1/asignaciones", headers=auth(diego["token"]), params={"solicitud_id": emergencia["id"], "estado": "activa"})
+    activas = r.json()["elementos"]
+    verificar("La emergencia tiene 2 asignaciones activas (la propia y la del apoyo)", r.status_code == 200 and len(activas) == 2, r.text[:300])
+    requests.patch(f"{ASISTENCIA}/v1/solicitudes/{emergencia['id']}/estado", headers=auth(diego["token"]), json={"estado": "atendido"})
+    for a in activas:
+        r = requests.patch(f"{RECURSOS}/v1/asignaciones/{a['id']}", headers=auth(diego["token"]), json={"estado": "finalizada"})
+    verificar("Al finalizar, las unidades vuelven a disponible",
+              r.status_code == 200 and all(u["estado"] == "disponible" for u in r.json()["unidades"]), r.text)
+    r = requests.patch(f"{RECURSOS}/v1/asignaciones/{asignacion['id']}", headers=auth(diego["token"]), json={"estado": "finalizada"})
+    verificar("Finalizar otra vez: 409 ASIGNACION_FINALIZADA", r.status_code == 409, r.text)
+    r = requests.post(f"{RECURSOS}/v1/asignaciones", headers=auth(diego["token"]), json={"solicitud_id": emergencia["id"], "unidad_ids": [cerca["id"]]})
+    verificar("Con la emergencia atendida ya no se asigna: 409", r.status_code == 409 and r.json()["error"]["codigo"] == "SOLICITUD_NO_EN_ATENCION", r.text)
+
+    # Las unidades de prueba quedan fuera de servicio para no confundirse con las reales.
+    for u in (cerca, lejos, taller):
+        requests.patch(f"{RECURSOS}/v1/unidades/{u['id']}", headers=auth(admin), json={"estado": "fuera_servicio"})
+
 if PUERTO_EVENTOS:
-    anotar("\n13. Eventos publicados en Alertas")
+    anotar("\n14. Eventos publicados en Alertas")
     time.sleep(1)
     nombres = [e["nombre"] for e in eventos]
     verificar("Llegaron eventos con la clave de servicio", eventos and all(e["clave"] == CLAVE_SERVICIO for e in eventos))
@@ -373,8 +492,11 @@ if PUERTO_EVENTOS:
     verificar(f"Un solicitud.creada por cada solicitud nueva ({esperadas}), sin repetir el reenvío", len(creadas) == esperadas, nombres)
     verificar("El evento no lleva datos personales", all("ciudadano" not in e["datos"] and "descripcion" not in e["datos"] for e in creadas))
     cambios = [e["datos"]["estado_nuevo"] for e in eventos if e["nombre"] == "solicitud.estado_cambiado"]
-    verificar("Cambios de estado publicados: en_atencion, atendido, descartado", cambios == ["en_atencion", "atendido", "descartado"], cambios)
+    esperados = ["en_atencion", "atendido", "descartado"] + (["en_atencion", "atendido"] if RECURSOS else [])
+    verificar("Cambios de estado publicados, en orden", cambios == esperados, cambios)
     verificar("Severidad reclasificada publicada", nombres.count("solicitud.severidad_cambiada") == 1, nombres)
+    if RECURSOS:
+        verificar(f"Recursos publica apoyo.solicitado ({apoyos_publicados})", nombres.count("apoyo.solicitado") == apoyos_publicados, nombres)
 
 anotar(f"\nResultado: {aprobadas} verificaciones aprobadas, {fallas} fallidas.")
 if EVIDENCIA:

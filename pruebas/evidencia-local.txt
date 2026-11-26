@@ -1,8 +1,9 @@
-Prueba de integración SENTIR - 2026-11-25T23:33:28Z
+Prueba de integración SENTIR - 2026-11-25T23:53:54Z
 Identidad:  http://127.0.0.1:8001
 Asistencia: http://127.0.0.1:8002
 Personas:   http://127.0.0.1:8003
-Ejecución:  f9e15d0e
+Recursos:   http://127.0.0.1:8004
+Ejecución:  bb2bcb50
 
 1. Los servicios responden
   [OK]    Identidad responde
@@ -112,11 +113,43 @@ Ejecución:  f9e15d0e
   [OK]    El operador ya no lo ve: 404
   [OK]    Retirar otra vez: 404
 
-13. Eventos publicados en Alertas
-  [OK]    Llegaron eventos con la clave de servicio
-  [OK]    Un solicitud.creada por cada solicitud nueva (6), sin repetir el reenvío
-  [OK]    El evento no lleva datos personales
-  [OK]    Cambios de estado publicados: en_atencion, atendido, descartado
-  [OK]    Severidad reclasificada publicada
+13. Recursos: inventario, unidades cercanas, asignaciones y apoyo
+  [OK]    Recursos responde
+  [OK]    El administrador registra una unidad: 201 disponible
+  [OK]    Nombre repetido: 409 NOMBRE_YA_REGISTRADO
+  [OK]    Un operador no registra unidades: 403
+  [OK]    El administrador pasa una unidad a mantenimiento
+  [OK]    Ocupada no se pone a mano: 422
+  [OK]    El inventario cuadra: estados y categorías suman el total
+  [OK]    Unidades cercanas ordenadas por distancia, con tiempo estimado
+  [OK]    Quien no es responsable no asigna: 403 NO_ES_RESPONSABLE
+  [OK]    A una solicitud pendiente no se le asigna: 409 SOLICITUD_NO_EN_ATENCION
+  [OK]    Una unidad en taller frena toda la asignación: 409 UNIDAD_NO_DISPONIBLE
+  [OK]    Todo o nada: la unidad cercana sigue disponible
+  [OK]    El responsable asigna la unidad cercana: 201
+  [OK]    La misma unidad no se asigna dos veces: 409
+  [OK]    Una unidad ocupada no pasa a mantenimiento: 409 UNIDAD_OCUPADA
+    Apoyo entre compañeros
+  [OK]    La prioridad usa la escala de severidad: 'alta' da 422
+  [OK]    Diego pide apoyo: 201 abierta
+  [OK]    Los demás operadores ven el pedido abierto
+  [OK]    Quien pidió el apoyo no lo atiende él mismo: 403
+  [OK]    Solo quien lo pidió lo cancela: 403
+  [OK]    Otro operador lo atiende enviando su unidad: queda asignada a la emergencia
+  [OK]    Atender otra vez: 409 APOYO_NO_ABIERTO
+  [OK]    Diego cancela su segundo pedido
+    Cierre: liberar unidades
+  [OK]    La emergencia tiene 2 asignaciones activas (la propia y la del apoyo)
+  [OK]    Al finalizar, las unidades vuelven a disponible
+  [OK]    Finalizar otra vez: 409 ASIGNACION_FINALIZADA
+  [OK]    Con la emergencia atendida ya no se asigna: 409
 
-Resultado: 89 verificaciones aprobadas, 0 fallidas.
+14. Eventos publicados en Alertas
+  [OK]    Llegaron eventos con la clave de servicio
+  [OK]    Un solicitud.creada por cada solicitud nueva (8), sin repetir el reenvío
+  [OK]    El evento no lleva datos personales
+  [OK]    Cambios de estado publicados, en orden
+  [OK]    Severidad reclasificada publicada
+  [OK]    Recursos publica apoyo.solicitado (2)
+
+Resultado: 117 verificaciones aprobadas, 0 fallidas.
